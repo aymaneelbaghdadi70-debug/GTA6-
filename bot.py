@@ -1,75 +1,93 @@
 import os
+import json
 import requests
-from datetime import datetime, timedelta, timezone
-from googleapiclient.discovery import build
 
-# جلب المفاتيح بأمان من إعدادات GitHub
-TELEGRAM_TOKEN = os.environ.get('9180497153:AAGzZ5CugaQ9Oa5V83vSEKsyAscJ3r4oYDM')
-CHAT_ID = os.environ.get('805348500')
-YOUTUBE_API_KEY = os.environ.get('AIzaSyCWrWHoZ_jWruzu2hS2BcE3dtJVUYq9anc')
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 
-youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+STATE_FILE = "last_videos.json"
+SEARCH_QUERIES = [
+    "GTA 6 trailer",
+    "Grand Theft Auto VI Rockstar Games"
+]
 
-# حساب الوقت قبل 8 ساعات لجلب المقاطع الحديثة فقط
-eight_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def send_telegram_message(text):
-url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
-payload = {
-"chat_id": CHAT_ID,
-"text": text,
-"parse_mode": "Markdown",
-"disable_web_page_preview": False
-}
-requests.post(url, json=payload)
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Error: TELEGRAM_TOKEN or CHAT_ID is missing.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    response = requests.post(url, data=payload, timeout=15)
+    response.raise_for_status()
 
-def fetch_gta6_videos():
-results_list = []
 
-# 1. البحث في مقاطع المشاع الإبداعي (Creative Commons) لـ GTA 6
-cc_request = youtube.search().list(
-part="snippet",
-q="GTA 6 gameplay OR trailer OR highlights",
-type="video",
-videoLicense="creativeCommon", # فلتر المشاع الإبداعي فقط
-publishedAfter=eight_hours_ago,
-order="viewCount",
-maxResults=3
-)
-cc_response = cc_request.execute()
+def load_seen_videos():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
 
-for item in cc_response.get('items', []):
-title = item['snippet']['title']
-video_id = item['id']['videoId']
-link = f"https://youtube.com{video_id}"
-results_list.append(f"🟢 *[مشاع إبداعي]* {title}\n🔗 {link}")
 
-# 2. البحث في القناة الرسمية لشركة Rockstar Games
-# المعرف الرسمي لقناة روكستار هو: UC6qhGbK96asGJwk9pZvUHpw
-official_request = youtube.search().list(
-part="snippet",
-channelId="UC6qhGbK96asGJwk9pZvUHpw",
-q="GTA 6",
-type="video",
-publishedAfter=eight_hours_ago,
-order="date",
-maxResults=2
-)
-official_response = official_request.execute()
+def save_seen_videos(seen_ids):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(seen_ids), f, ensure_ascii=False, indent=2)
 
-for item in official_response.get('items', []):
-title = item['snippet']['title']
-video_id = item['id']['videoId']
-link = f"https://youtube.com{video_id}"
-results_list.append(f"🏢 *[قناة روكستار الرسمية]* {title}\n🔗 {link}")
 
-return results_list
+def search_youtube(query):
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "order": "date",
+        "maxResults": 5,
+        "key": YOUTUBE_API_KEY
+    }
+    response = requests.get(url, params=params, timeout=15)
+    response.raise_for_status()
+    return response.json().get("items", [])
+
+
+def main():
+    if not YOUTUBE_API_KEY:
+        print("Error: YOUTUBE_API_KEY is missing.")
+        return
+
+    seen_ids = load_seen_videos()
+    new_videos = []
+
+    for query in SEARCH_QUERIES:
+        items = search_youtube(query)
+        for item in items:
+            video_id = item.get("id", {}).get("videoId")
+            if video_id and video_id not in seen_ids:
+                seen_ids.add(video_id)
+                title = item.get("snippet", {}).get("title", "New Video")
+                channel = item.get("snippet", {}).get("channelTitle", "Unknown Channel")
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                new_videos.append((title, channel, video_url))
+
+    for title, channel, video_url in new_videos:
+        message = (
+            f"🎬 <b>فيديو جديد متعلق بـ GTA 6!</b>\n\n"
+            f"📌 <b>العنوان:</b> {title}\n"
+            f"📺 <b>القناة:</b> {channel}\n"
+            f"🔗 {video_url}"
+        )
+        send_telegram_message(message)
+
+    save_seen_videos(seen_ids)
+    print(f"Done. Found {len(new_videos)} new video(s).")
+
 
 if __name__ == "__main__":
-videos = fetch_gta6_videos()
-if videos:
-header = "🎮 *تقرير لقطات GTA 6 الجديدة (آخر 8 ساعات):*\n\n"
-full_message = header + "\n\n".join(videos)
-send_telegram_message(full_message)
-else:
-print("لا توجد مقاطع جديدة في آخر 8 ساعات.")
+    main()
